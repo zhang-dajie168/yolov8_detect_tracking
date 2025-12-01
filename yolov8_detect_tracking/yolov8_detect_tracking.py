@@ -96,7 +96,7 @@ class Yolov8HandTrackNode(Node):
         self.declare_parameter('model_path', '')
         self.declare_parameter('conf_threshold', 0.3)
         self.declare_parameter('max_processing_fps', 15)
-        self.declare_parameter('ok_confirm_frames', 3)
+        self.declare_parameter('ok_confirm_frames', 10)
         self.declare_parameter('tracking_protection_time', 5.0)
         self.declare_parameter('reid_similarity_threshold', 0.8)
         self.declare_parameter('height_change_threshold', 0.15)
@@ -173,9 +173,9 @@ class Yolov8HandTrackNode(Node):
         # 跟踪相关变量
         self.tracked_persons: Dict[int, Dict] = {}
 
-        # 手势检测历史
-        self.ok_gesture_history: Dict[int, deque] = {}
-        self.stop_gesture_history: Dict[int, deque] = {}
+        # 手势检测历史 - 修改：使用整数计数器而不是deque
+        self.ok_gesture_count: Dict[int, int] = {}  # 连续OK手势计数
+        self.stop_gesture_count: Dict[int, int] = {}  # 连续STOP手势计数
         
         # 当前正在跟踪的目标ID
         self.current_tracking_id = None
@@ -235,7 +235,7 @@ class Yolov8HandTrackNode(Node):
                 distance = ((gesture_center_x - person_center_x) ** 2 + 
                         (gesture_center_y - person_center_y) ** 2) ** 0.5
                 
-                self.get_logger().info(f"手势中心在ID {person_id} 框内，距离: {distance:.1f}")
+                # self.get_logger().info(f"手势中心在ID {person_id} 框内，距离: {distance:.1f}")
                 
                 if distance < min_distance:
                     min_distance = distance
@@ -513,10 +513,10 @@ class Yolov8HandTrackNode(Node):
                     person_detections.append([x1, y1, x2-x1, y2-y1, score, 0])
                 elif class_id == 1:  # ok手势
                     ok_gestures.append((x1, y1, x2, y2, score))
-                    self.get_logger().info(f"检测到OK手势: ({x1}, {y1}, {x2}, {y2}), 置信度: {score:.2f}")
+                    # self.get_logger().info(f"检测到OK手势: ({x1}, {y1}, {x2}, {y2}), 置信度: {score:.2f}")
                 elif class_id == 2:  # stop手势
                     stop_gestures.append((x1, y1, x2, y2, score))
-                    self.get_logger().info(f"检测到STOP手势: ({x1}, {y1}, {x2}, {y2}), 置信度: {score:.2f}")
+                    # self.get_logger().info(f"检测到STOP手势: ({x1}, {y1}, {x2}, {y2}), 置信度: {score:.2f}")
 
             # 跟踪person检测结果
             tracking_results = self.tracker.update(person_detections, cv_image)
@@ -583,73 +583,76 @@ class Yolov8HandTrackNode(Node):
             'first_seen_time': current_time,
             'last_seen_time': current_time
         }
-        # 确保手势历史记录被正确初始化
-        if track_id not in self.ok_gesture_history:
-            self.ok_gesture_history[track_id] = deque(maxlen=self.ok_confirm_frames)
-        if track_id not in self.stop_gesture_history:
-            self.stop_gesture_history[track_id] = deque(maxlen=self.ok_confirm_frames)
+        # 修复：确保手势历史记录被正确初始化
+        if track_id not in self.ok_gesture_count:
+            self.ok_gesture_count[track_id] = 0
+        if track_id not in self.stop_gesture_count:
+            self.stop_gesture_count[track_id] = 0
 
     def _process_gesture_control(self, ok_gestures: List, stop_gestures: List, 
                                person_boxes: Dict, cv_image: np.ndarray, current_time: float):
-        """处理手势控制逻辑 - 修复版本"""
-        # 处理ok手势检测
-        if ok_gestures:
-            self.get_logger().info(f"开始处理 {len(ok_gestures)} 个OK手势")
+        """处理手势控制逻辑 - 实时连续检测版本"""
+        # 首先，更新所有目标的手势计数器
+        for track_id in list(self.tracked_persons.keys()):
+            # 检查是否检测到该目标的手势
+            target_has_ok = False
+            target_has_stop = False
             
-        for ok_gesture in ok_gestures:
-            x1, y1, x2, y2, score = ok_gesture
-            ok_box = (x1, y1, x2, y2)
+            # 检查OK手势
+            for ok_gesture in ok_gestures:
+                x1, y1, x2, y2, score = ok_gesture
+                ok_box = (x1, y1, x2, y2)
+                person_id, _, iou = self.find_person_for_gesture(ok_box, person_boxes)
+                if person_id == track_id and iou >= self.roi_threshold:
+                    target_has_ok = True
+                    break
             
-            # 找到与ok手势重叠度最高的人体
-            person_id, person_box, iou = self.find_person_for_gesture(ok_box, person_boxes)
+            # 检查STOP手势
+            for stop_gesture in stop_gestures:
+                x1, y1, x2, y2, score = stop_gesture
+                stop_box = (x1, y1, x2, y2)
+                person_id, _, iou = self.find_person_for_gesture(stop_box, person_boxes)
+                if person_id == track_id and iou >= self.roi_threshold:
+                    target_has_stop = True
+                    break
             
-            if person_id is not None:
-                self.get_logger().info(f"OK手势与ID {person_id} 的IoU: {iou:.3f} (阈值: {self.roi_threshold})")
+            # 更新OK手势计数器
+            if target_has_ok:
+                self.ok_gesture_count[track_id] += 1
+                # 如果检测到OK手势，重置STOP手势计数器
+                self.stop_gesture_count[track_id] = 0
                 
-                if iou >= self.roi_threshold:
-                    # 确保手势历史记录存在
-                    if person_id not in self.ok_gesture_history:
-                        self.ok_gesture_history[person_id] = deque(maxlen=self.ok_confirm_frames)
-                    
-                    # 添加手势检测记录
-                    self.ok_gesture_history[person_id].append(True)
-                    current_count = len(self.ok_gesture_history[person_id])
-                    ok_confirmed = current_count >= self.ok_confirm_frames
-                    
-                    self.get_logger().info(f"ID {person_id} OK手势历史: {current_count}/{self.ok_confirm_frames}")
-                    
-                    if ok_confirmed:
-                        self._handle_ok_gesture(person_id, person_box, cv_image, current_time)
-                else:
-                    self.get_logger().warning(f"OK手势与ID {person_id} 的IoU {iou:.3f} 低于阈值 {self.roi_threshold}")
+                # 检查是否达到连续帧数
+                if self.ok_gesture_count[track_id] >= self.ok_confirm_frames:
+                    if track_id in person_boxes:
+                        person_box = person_boxes[track_id]
+                        self._handle_ok_gesture(track_id, person_box, cv_image, current_time)
             else:
-                self.get_logger().warning("未找到与OK手势匹配的人员")
-
-        # 处理stop手势检测
-        for stop_gesture in stop_gestures:
-            x1, y1, x2, y2, score = stop_gesture
-            stop_box = (x1, y1, x2, y2)
+                # 如果没有检测到OK手势，重置计数器
+                self.ok_gesture_count[track_id] = 0
             
-            # 找到与stop手势重叠度最高的人体
-            person_id, person_box, iou = self.find_person_for_gesture(stop_box, person_boxes)
-            
-            if person_id is not None and iou >= self.roi_threshold:
-                # 确保手势历史记录存在
-                if person_id not in self.stop_gesture_history:
-                    self.stop_gesture_history[person_id] = deque(maxlen=self.ok_confirm_frames)
+            # 更新STOP手势计数器
+            if target_has_stop:
+                self.stop_gesture_count[track_id] += 1
+                # 如果检测到STOP手势，重置OK手势计数器
+                self.ok_gesture_count[track_id] = 0
                 
-                # 添加手势检测记录
-                self.stop_gesture_history[person_id].append(True)
-                current_count = len(self.stop_gesture_history[person_id])
-                stop_confirmed = current_count >= self.ok_confirm_frames
-                
-                self.get_logger().info(f"ID {person_id} STOP手势历史: {current_count}/{self.ok_confirm_frames}")
-                
-                if stop_confirmed:
-                    self._handle_stop_gesture(person_id, current_time)
+                # 检查是否达到连续帧数
+                if self.stop_gesture_count[track_id] >= self.ok_confirm_frames:
+                    self._handle_stop_gesture(track_id, current_time)
+            else:
+                # 如果没有检测到STOP手势，重置计数器
+                self.stop_gesture_count[track_id] = 0
 
     def _handle_ok_gesture(self, person_id: int, person_box: Tuple, cv_image: np.ndarray, current_time: float):
-        """处理ok手势确认"""
+        """处理ok手势确认 - 禁止跟踪切换版本"""
+        # 如果已经在跟踪某人，且不是同一个人，则拒绝新的OK手势
+        if self.current_tracking_id is not None and self.current_tracking_id != person_id:
+            self.get_logger().info(f"已在跟踪ID {self.current_tracking_id}，忽略ID {person_id}的OK手势")
+            # 重置计数器
+            self.ok_gesture_count[person_id] = 0
+            return
+            
         person = self.tracked_persons[person_id]
         in_cooldown_period = (current_time - person['last_ok_time'] < self.tracking_protection_time)
         
@@ -659,31 +662,45 @@ class Yolov8HandTrackNode(Node):
             person['tracking_start_time'] = current_time
             person['last_ok_time'] = current_time
             
-            # 清空手势历史
-            if person_id in self.ok_gesture_history:
-                self.ok_gesture_history[person_id].clear()
+            # 清空手势计数器
+            self.ok_gesture_count[person_id] = 0
+            self.stop_gesture_count[person_id] = 0
             
             self.save_tracked_target(person_id, list(person_box), cv_image, current_time)
             self.target_lost_time = None
-            self.get_logger().info(f"🎯 开始跟踪 ID: {person_id} (OK手势确认)")
+            self.get_logger().info(f"🎯 开始跟踪 ID: {person_id} (连续OK手势确认)")
+        else:
+            # 在冷却期内，重置计数器
+            self.ok_gesture_count[person_id] = 0
+            self.get_logger().info(f"ID {person_id} 在冷却期内，重置OK手势计数器")
 
     def _handle_stop_gesture(self, person_id: int, current_time: float):
         """处理stop手势确认"""
-        if self.current_tracking_id == person_id:
-            person = self.tracked_persons[person_id]
-            in_protection_period = (current_time - person['tracking_start_time'] < self.tracking_protection_time)
+        # 修复：只有当前正在跟踪这个目标时，才处理STOP手势
+        if self.current_tracking_id != person_id:
+            self.get_logger().info(f"当前未跟踪ID {person_id}，忽略STOP手势")
+            # 重置计数器
+            self.stop_gesture_count[person_id] = 0
+            return
             
-            if not in_protection_period:
-                person['is_tracking'] = False
-                person['last_ok_time'] = current_time
-                
-                # 清空手势历史
-                if person_id in self.stop_gesture_history:
-                    self.stop_gesture_history[person_id].clear()
-                
-                self.current_tracking_id = None
-                self.target_lost_time = None
-                self.get_logger().info(f"🛑 停止跟踪 ID: {person_id}")
+        person = self.tracked_persons[person_id]
+        in_protection_period = (current_time - person['tracking_start_time'] < self.tracking_protection_time)
+        
+        if not in_protection_period:
+            person['is_tracking'] = False
+            person['last_ok_time'] = current_time
+            
+            # 清空手势计数器
+            self.ok_gesture_count[person_id] = 0
+            self.stop_gesture_count[person_id] = 0
+            
+            self.current_tracking_id = None
+            self.target_lost_time = None
+            self.get_logger().info(f"🛑 停止跟踪 ID: {person_id} (连续STOP手势确认)")
+        else:
+            # 在保护期内，重置计数器
+            self.stop_gesture_count[person_id] = 0
+            self.get_logger().info(f"ID {person_id} 在保护期内，重置STOP手势计数器")
 
     def _handle_lost_targets(self, current_track_ids: set, tracks: List[Dict], 
                             cv_image: np.ndarray, current_time: float):
@@ -772,10 +789,10 @@ class Yolov8HandTrackNode(Node):
             # 清除所有相关存储
             if target_id in self.tracked_persons:
                 del self.tracked_persons[target_id]
-            if target_id in self.ok_gesture_history:
-                del self.ok_gesture_history[target_id]
-            if target_id in self.stop_gesture_history:
-                del self.stop_gesture_history[target_id]
+            if target_id in self.ok_gesture_count:
+                del self.ok_gesture_count[target_id]
+            if target_id in self.stop_gesture_count:
+                del self.stop_gesture_count[target_id]
             if target_id in self.tracked_targets:
                 del self.tracked_targets[target_id]
       
@@ -800,10 +817,10 @@ class Yolov8HandTrackNode(Node):
         """移除跟踪目标"""
         if track_id in self.tracked_persons:
             del self.tracked_persons[track_id]
-        if track_id in self.ok_gesture_history:
-            del self.ok_gesture_history[track_id]
-        if track_id in self.stop_gesture_history:
-            del self.stop_gesture_history[track_id]
+        if track_id in self.ok_gesture_count:
+            del self.ok_gesture_count[track_id]
+        if track_id in self.stop_gesture_count:
+            del self.stop_gesture_count[track_id]
         if track_id in self.tracked_targets:
             target = self.tracked_targets[track_id]
             if target.is_switched and target.original_track_id not in self.tracked_targets:
