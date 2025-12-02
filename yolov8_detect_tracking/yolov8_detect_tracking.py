@@ -763,23 +763,28 @@ class Yolov8HandTrackNode(Node):
                 if verified_id is not None:
                     # ReID验证成功，重置丢失时间
                     self.target_lost_time = None
+                    # 重要：重置丢失帧计数
+                    if self.current_tracking_id in self.tracked_targets:
+                        self.tracked_targets[self.current_tracking_id].lost_frames = 0
                     self.get_logger().info(f"目标 {self.current_tracking_id}重新出现，ReID验证成功，继续跟踪")
                     
                     if verified_id in self.tracked_persons:
                         self.tracked_persons[verified_id]['is_tracking'] = True
                         self.tracked_persons[verified_id]['last_seen_time'] = current_time
                 else:
-                    # ReID验证失败，但目标重新出现 - 关键修改：继续累积丢失时间
-                    time_since_lost = current_time - self.target_lost_time
-
+                    # ReID验证失败 - 标记为丢失状态
+                    if self.current_tracking_id in self.tracked_targets:
+                        self.tracked_targets[self.current_tracking_id].mark_lost()
+                    
                     # 检查是否超时
+                    time_since_lost = current_time - self.target_lost_time
                     if time_since_lost > self.lost_timeout_threshold:
                         self.get_logger().warning(
                             f"目标 {self.current_tracking_id} ReID验证失败超过 {self.lost_timeout_threshold} 秒，停止跟踪并清除目标信息，需要重新OK手势选择跟踪目标"
                         )
                         self._clear_tracking_target()
                         return
-                    
+                        
                 self.get_logger().info(f"======================================================")
 
     def _clear_tracking_target(self):
@@ -895,27 +900,40 @@ class Yolov8HandTrackNode(Node):
         """发布边界框和肩部关键点坐标和置信度 - 简化优化版"""
         current_tracking_id = self.current_tracking_id
         
-        # 查找当前跟踪的目标
-        tracking_target = None
+        # 查找当前跟踪的目标是否在当前帧中
+        tracking_target_in_frame = None
         for track in tracks:
             track_id = track['track_id']
-            if (current_tracking_id is not None and track_id == current_tracking_id) or \
-            (track_id in self.tracked_persons and self.tracked_persons[track_id]['is_tracking']):
-                tracking_target = track
+            if current_tracking_id is not None and track_id == current_tracking_id:
+                tracking_target_in_frame = track
                 break
         
         polygon_msg = PolygonStamped()
         polygon_msg.header = header
         polygon_msg.header.frame_id = "camera_link"
         
-        if tracking_target:
-            # 发布正常跟踪状态
-            track_id = tracking_target['track_id']
-            x1, y1, x2, y2 = tracking_target['bbox']
+        # 关键修改：检查目标是否处于ReID验证失败的"伪丢失"状态
+        target_is_reid_failed = False
+        if (current_tracking_id is not None and 
+            current_tracking_id in self.tracked_targets and
+            self.tracked_targets[current_tracking_id].lost_frames > 0):
+            
+            # 如果目标有丢失帧记录，说明ReID验证可能失败
+            target_is_reid_failed = True
+        
+        # 检查目标是否真的丢失（不在当前帧中且ReID验证失败）
+        target_is_lost = (current_tracking_id is not None and 
+                        (tracking_target_in_frame is None or target_is_reid_failed) and
+                        self.target_lost_time is not None)
+        
+        if tracking_target_in_frame and not target_is_reid_failed:
+            # 发布正常跟踪状态 - 目标在当前帧中且ReID验证通过
+            track_id = tracking_target_in_frame['track_id']
+            x1, y1, x2, y2 = tracking_target_in_frame['bbox']
             
             # 构建消息点：状态信息 + 边界框
             points = [
-                Point32(x=float(track_id), y=1.0, z=2.0),  # 状态点
+                Point32(x=float(track_id), y=1.0, z=2.0),  # 状态点: y=1.0表示正常跟踪
                 Point32(x=float(x1), y=float(y1), z=0.0),   # 边界框左上
                 Point32(x=float(x2), y=float(y2), z=0.0),   # 边界框右下
             ]
@@ -923,8 +941,8 @@ class Yolov8HandTrackNode(Node):
             polygon_msg.polygon.points = points
             # self.get_logger().info(f"📤 发布跟踪信息: ID {track_id}")
             
-        elif current_tracking_id is not None:
-            # 发布目标丢失状态
+        elif target_is_lost:
+            # 发布目标丢失状态 - 目标被标记为跟踪但不在当前帧中或ReID验证失败
             points = [
                 Point32(x=float(current_tracking_id), y=0.0, z=0.0),  # 状态点：y=0表示丢失
                 Point32(x=0.0, y=0.0, z=0.0),

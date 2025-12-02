@@ -1,28 +1,36 @@
 
 # 1.build
-colcon build --packages-select yolov11_pose_tracking
+colcon build --packages-select yolov8_detect_tracking
 
 # 2. run
  source install/setup.bash
- ros2 launch yolov11_pose_tracking yolov11_pose_tracking.launch.py 
+ ros2 launch yolov8_detect_tracking yolov8_detect_tracking.launch.py 
  
  
 # 3. echo
 
-ros2 topic echo /person_positions
+ros2 topic echo /keypoint_tracks
 
 
 # 4.result
 
 header:
   stamp:
-    sec: 1753167759
-    nanosec: 513306880
+    sec: 1764656961
+    nanosec: 514896896
   frame_id: camera_link
-point:
-  x: 0.49863838130769866
-  y: -0.017254455821008704
-  z: 0.975
+polygon:
+  points:
+  - x: 1.0
+    y: 1.0
+    z: 2.0
+  - x: 309.0
+    y: 73.0
+    z: 0.0
+  - x: 639.0
+    y: 471.0
+    z: 0.0
+
 
 
 # 跟踪找回逻辑：
