@@ -297,7 +297,7 @@ class BaseModel:
 
     def bgr2nv12(self, bgr_img: np.ndarray) -> np.ndarray:
         """Convert a BGR image to the NV12 format using letterbox resize."""
-        begin_time = time()
+        # begin_time = time()
         
         # 使用letterbox调整大小
         resized_img = self.letterbox_resize(bgr_img)
@@ -316,13 +316,13 @@ class BaseModel:
         return nv12
 
     def forward(self, input_tensor: np.array) -> list[dnn.pyDNNTensor]:
-        begin_time = time()
+        # begin_time = time()
         outputs = self.quantize_model[0].forward(input_tensor)
         # logger.debug("\033[1;31m" + f"forward time = {1000*(time() - begin_time):.2f} ms" + "\033[0m")
         return outputs
 
     def c2numpy(self, outputs) -> list[np.array]:
-        begin_time = time()
+        # begin_time = time()
         numpy_outputs = [dnnTensor.buffer for dnnTensor in outputs]
         # logger.debug("\033[1;31m" + f"c to numpy time = {1000*(time() - begin_time):.2f} ms" + "\033[0m")
         return numpy_outputs
@@ -372,7 +372,7 @@ class YOLOv8_Detect(BaseModel):
         # logger.info(f"REG = {self.REG}, CLASSES_NUM = {self.CLASSES_NUM}")
 
     def postProcess(self, outputs: list[np.ndarray]) -> list:
-        begin_time = time()
+        # begin_time = time()
         
         # reshape
         s_clses = outputs[0].reshape(-1, self.CLASSES_NUM)

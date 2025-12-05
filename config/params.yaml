@@ -1,7 +1,7 @@
 Yolov8HandTrackNode:
   ros__parameters:
     # YOLO模型参数
-    model_path: "/home/sunrise/Ebike_Human_Follower/src/yolov8_detect_tracking/models/yolov8n_hand5.0_bayese_640x640_nv12_modified.bin"
+    model_path: "/home/sunrise/Ebike_Human_Follower/src/yolov8_detect_tracking/models/yolov8n_hand6.0_bayese_640x640_nv12_modified.bin"
     conf_threshold: 0.3
     kpt_conf_threshold: 0.3
 
